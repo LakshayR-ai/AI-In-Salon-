@@ -1,0 +1,64 @@
+# ─────────────────────────────────────────────
+#  Base configuration for Hair Transfer Project
+# ─────────────────────────────────────────────
+
+# Dataset
+data:
+  root: "dataset"
+  image_size: 256
+  batch_size: 8
+  num_workers: 4
+
+# StyleGAN2
+stylegan:
+  checkpoint: "pretrained/stylegan2-ffhq-256.pt"
+  size: 256
+  latent_dim: 512
+  n_mlp: 8
+  channel_multiplier: 2
+
+# Encoder (pSp / e4e style)
+encoder:
+  checkpoint: "pretrained/encoder.pt"
+  n_styles: 14             # number of W+ style vectors for 256px
+  backbone: "resnet50"
+
+# Shape module
+shape:
+  checkpoint: "pretrained/shape_module.pt"
+  latent_dim: 512
+
+# Color module
+color:
+  checkpoint: "pretrained/color_module.pt"
+  clip_model: "ViT-B/32"
+
+# Refinement UNet
+refinement:
+  checkpoint: "pretrained/refinement.pt"
+  base_channels: 64
+
+# Loss weights
+loss:
+  lambda_l1: 1.0
+  lambda_perceptual: 0.8
+  lambda_identity: 0.1
+  lambda_clip: 0.5
+  lambda_adv: 0.01
+
+# Optimizer
+optimizer:
+  lr: 1.0e-4
+  betas: [0.9, 0.999]
+  weight_decay: 0.0
+
+# Training
+train:
+  max_epochs: 100
+  save_every: 5            # save checkpoint every N epochs
+  log_every: 100           # log every N steps
+  mixed_precision: true
+  output_dir: "outputs"
+
+# Device
+device: "cpu"   # change to "cuda" if you have a CUDA GPU

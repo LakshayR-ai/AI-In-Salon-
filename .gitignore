@@ -1,2 +1,36 @@
+# IDE
 .vscode/
-.hair_transfer/outputs/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+venv/
+
+# Model checkpoints — too large for git
+*.pt
+*.pth
+*.ckpt
+*.pkl
+*.npz
+
+# Training outputs
+hair_transfer/outputs/
+hair_transfer/pretrained/
+
+# Dataset — too large for git
+hair_transfer/dataset/
+hair_transfer/raw_images/
+
+# Debug / temp files
+hair_transfer/debug_*.png
+hair_transfer/result.png
+hair_transfer/quick_result.png
+*.zip
+
+# OS
+.DS_Store
+Thumbs.db

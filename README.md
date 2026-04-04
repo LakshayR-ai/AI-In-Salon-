@@ -27,8 +27,23 @@ pip install -r hair_transfer/requirements.txt
 pip install dlib-bin
 pip install git+https://github.com/openai/CLIP.git
 
-# Start the app
+# Download pretrained weights
 cd hair_transfer
+python -c "
+import requests, os
+os.makedirs('pretrained', exist_ok=True)
+files = {
+    'pretrained/stylegan2-ffhq-256.pt': 'https://huggingface.co/AIRI-Institute/HairFastGAN/resolve/main/pretrained_models/StyleGAN/ffhq.pt',
+    'pretrained/face_parsing.pth': 'https://huggingface.co/AI2lab/face-parsing.PyTorch/resolve/main/79999_iter.pth',
+}
+for dest, url in files.items():
+    r = requests.get(url, stream=True)
+    with open(dest, 'wb') as f:
+        for chunk in r.iter_content(8192): f.write(chunk)
+    print(f'Downloaded {dest}')
+"
+
+# Start the app
 uvicorn app.backend:app --host 0.0.0.0 --port 8000 --reload
 ```
 

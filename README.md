@@ -22,28 +22,19 @@ Upload a face photo + a hairstyle reference image → get the result with the ha
 ## Quick Start
 
 ```bash
-# Install dependencies
-pip install -r hair_transfer/requirements.txt
+# 1. Clone
+git clone https://github.com/LakshayR-ai/AI-In-Salon-.git
+cd AI-In-Salon-/hair_transfer
+
+# 2. Install dependencies
+pip install -r requirements.txt
 pip install dlib-bin
 pip install git+https://github.com/openai/CLIP.git
 
-# Download pretrained weights
-cd hair_transfer
-python -c "
-import requests, os
-os.makedirs('pretrained', exist_ok=True)
-files = {
-    'pretrained/stylegan2-ffhq-256.pt': 'https://huggingface.co/AIRI-Institute/HairFastGAN/resolve/main/pretrained_models/StyleGAN/ffhq.pt',
-    'pretrained/face_parsing.pth': 'https://huggingface.co/AI2lab/face-parsing.PyTorch/resolve/main/79999_iter.pth',
-}
-for dest, url in files.items():
-    r = requests.get(url, stream=True)
-    with open(dest, 'wb') as f:
-        for chunk in r.iter_content(8192): f.write(chunk)
-    print(f'Downloaded {dest}')
-"
+# 3. One-command setup (downloads weights + 1000 face images + preprocesses)
+python setup.py
 
-# Start the app
+# 4. Start the app
 uvicorn app.backend:app --host 0.0.0.0 --port 8000 --reload
 ```
 

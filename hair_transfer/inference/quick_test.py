@@ -196,12 +196,12 @@ def blend_hair(source: Image.Image, reference: Image.Image,
     )
 
     # Final composite — full opacity in hair region, feathered edges only
-    # Use hard mask for center, soft for edges
     ref_mask_hard = (ref_mask_dilated > 128).astype(float)
     ref_mask_edge = gaussian_filter(ref_mask_hard, sigma=8)
-    
+
     alpha = ref_mask_edge[:, :, None]
-    final = result.astype(float) * alpha + src_arr.astype(float) * (1 - alpha)
+    # Use src_no_hair as base so original hair doesn't show through
+    final = result.astype(float) * alpha + src_no_hair * (1 - alpha)
     final = np.clip(final, 0, 255).astype(np.uint8)
 
     return Image.fromarray(final)

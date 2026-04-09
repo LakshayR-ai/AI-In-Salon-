@@ -69,7 +69,11 @@ def match_color(src: np.ndarray, ref: np.ndarray,
 def build_gaussian_pyramid(img: np.ndarray, levels: int) -> list:
     pyramid = [img.astype(float)]
     for _ in range(levels):
-        blurred = gaussian_filter(pyramid[-1], sigma=[1, 1, 0])
+        prev = pyramid[-1]
+        if prev.ndim == 3:
+            blurred = gaussian_filter(prev, sigma=[1, 1, 0])
+        else:
+            blurred = gaussian_filter(prev, sigma=1)
         pyramid.append(blurred[::2, ::2])
     return pyramid
 

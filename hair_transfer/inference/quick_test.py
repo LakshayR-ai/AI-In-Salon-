@@ -175,17 +175,23 @@ def blend_hair(source: Image.Image, reference: Image.Image,
     hair_px = ref_mask_dilated > 0
     ref_hair_only[hair_px] = ref_color.astype(float)[hair_px]
 
-    # Also erase source hair by inpainting with surrounding skin color
+    # Erase source hair — only fill exact hair pixels, not surrounding face
     src_no_hair = src_arr.copy().astype(float)
-    src_hair_px = src_mask > 0
+    src_hair_px = src_mask > 128
     if src_hair_px.sum() > 0:
-        # Fill source hair region with average forehead/skin color
-        # Sample skin color from face region (below hair, above eyes)
+        # Sample skin from forehead area (narrow band just below hairline)
         h, w = src_arr.shape[:2]
-        skin_region = src_arr[h//3:h//2, w//4:3*w//4]
-        skin_color  = skin_region.mean(axis=(0,1))
-        # Blend skin color into source hair area
-        src_hair_soft = gaussian_filter(src_hair_px.astype(float), sigma=8)
+        # Use a small region just outside the hair mask as skin reference
+        skin_mask = gaussian_filter(src_hair_px.astype(float), sigma=20)
+        skin_mask_border = np.clip(skin_mask - src_hair_px.astype(float), 0, 1)
+        if skin_mask_border.sum() > 0:
+            skin_color = (src_arr.astype(float) * skin_mask_border[:,:,None]).sum(axis=(0,1)) \
+                         / (skin_mask_border.sum() + 1e-8)
+        else:
+            skin_color = src_arr[h//2:2*h//3, w//3:2*w//3].mean(axis=(0,1))
+
+        # Only fill exact hair pixels with soft transition
+        src_hair_soft = gaussian_filter(src_hair_px.astype(float), sigma=3)
         src_no_hair = src_arr.astype(float) * (1 - src_hair_soft[:,:,None]) + \
                       skin_color * src_hair_soft[:,:,None]
 

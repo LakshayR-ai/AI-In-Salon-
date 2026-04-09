@@ -159,24 +159,34 @@ def blend_hair(source: Image.Image, reference: Image.Image,
     # Color match
     ref_color = match_color(ref_arr, src_arr, src_mask)
 
-    # Feather mask
-    ref_mask_soft = gaussian_filter(ref_mask_dilated.astype(float), sigma=12)
-    ref_mask_soft = np.clip(ref_mask_soft / ref_mask_soft.max(), 0, 1) \
-                    if ref_mask_soft.max() > 0 else ref_mask_soft
+    # Feather mask edges
+    ref_mask_soft = gaussian_filter(ref_mask_dilated.astype(float), sigma=10)
+    if ref_mask_soft.max() > 0:
+        ref_mask_soft = np.clip(ref_mask_soft / ref_mask_soft.max(), 0, 1)
 
-    # Pyramid blend
+    # Only blend in the hair region — keep source face/background intact
+    # Use tighter mask to avoid background bleed
+    ref_mask_tight = gaussian_filter(ref_mask.astype(float), sigma=6)
+    if ref_mask_tight.max() > 0:
+        ref_mask_tight = np.clip(ref_mask_tight / ref_mask_tight.max(), 0, 1)
+
+    # Color-matched reference hair only (not full image)
+    ref_hair_only = src_arr.copy().astype(float)
+    hair_px = ref_mask_dilated > 0
+    ref_hair_only[hair_px] = ref_color.astype(float)[hair_px]
+
+    # Pyramid blend with tight mask
     result = pyramid_blend(
-        src_arr, ref_color,
+        src_arr, ref_hair_only.astype(np.uint8),
         (ref_mask_soft * 255).astype(np.uint8)
     )
 
-    # Final feathered composite
-    alpha  = ref_mask_soft[:, :, None]
-    final  = result.astype(float) * alpha + src_arr.astype(float) * (1 - alpha)
-    final  = np.clip(final, 0, 255).astype(np.uint8)
+    # Final composite — only modify hair region
+    alpha = ref_mask_tight[:, :, None]
+    final = result.astype(float) * alpha + src_arr.astype(float) * (1 - alpha)
+    final = np.clip(final, 0, 255).astype(np.uint8)
 
     return Image.fromarray(final)
-
 
 def main():
     parser = argparse.ArgumentParser()

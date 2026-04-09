@@ -175,14 +175,32 @@ def blend_hair(source: Image.Image, reference: Image.Image,
     hair_px = ref_mask_dilated > 0
     ref_hair_only[hair_px] = ref_color.astype(float)[hair_px]
 
-    # Pyramid blend with tight mask
+    # Also erase source hair by inpainting with surrounding skin color
+    src_no_hair = src_arr.copy().astype(float)
+    src_hair_px = src_mask > 0
+    if src_hair_px.sum() > 0:
+        # Fill source hair region with average forehead/skin color
+        # Sample skin color from face region (below hair, above eyes)
+        h, w = src_arr.shape[:2]
+        skin_region = src_arr[h//3:h//2, w//4:3*w//4]
+        skin_color  = skin_region.mean(axis=(0,1))
+        # Blend skin color into source hair area
+        src_hair_soft = gaussian_filter(src_hair_px.astype(float), sigma=8)
+        src_no_hair = src_arr.astype(float) * (1 - src_hair_soft[:,:,None]) + \
+                      skin_color * src_hair_soft[:,:,None]
+
+    # Pyramid blend reference hair onto hair-erased source
     result = pyramid_blend(
-        src_arr, ref_hair_only.astype(np.uint8),
+        src_no_hair.astype(np.uint8), ref_hair_only.astype(np.uint8),
         (ref_mask_soft * 255).astype(np.uint8)
     )
 
-    # Final composite — only modify hair region
-    alpha = ref_mask_tight[:, :, None]
+    # Final composite — full opacity in hair region, feathered edges only
+    # Use hard mask for center, soft for edges
+    ref_mask_hard = (ref_mask_dilated > 128).astype(float)
+    ref_mask_edge = gaussian_filter(ref_mask_hard, sigma=8)
+    
+    alpha = ref_mask_edge[:, :, None]
     final = result.astype(float) * alpha + src_arr.astype(float) * (1 - alpha)
     final = np.clip(final, 0, 255).astype(np.uint8)
 

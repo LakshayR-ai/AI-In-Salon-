@@ -21,6 +21,27 @@ Upload a face photo + a hairstyle reference image → get the result with the ha
 
 ## Quick Start
 
+### 🌐 Google Colab (No Setup Required)
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/)
+
+See [COLAB_SETUP.md](COLAB_SETUP.md) for complete Colab instructions.
+
+**Quick Colab Setup:**
+```python
+# 1. Install dependencies (then restart runtime)
+!pip install torch==2.2.0+cu121 torchvision==0.17.0+cu121 --index-url https://download.pytorch.org/whl/cu121 -q
+!pip install ninja scipy face-alignment dlib-bin addict fastapi uvicorn requests tqdm -q
+!pip install git+https://github.com/openai/CLIP.git -q
+
+# 2. After restart, download setup script and run
+!wget -q https://raw.githubusercontent.com/LakshayR-ai/AI-In-Salon-/main/colab_setup.py
+%run colab_setup.py
+quick_start()
+```
+
+### 💻 Local Setup
+
 ```bash
 # 1. Clone
 git clone https://github.com/LakshayR-ai/AI-In-Salon-.git
@@ -31,10 +52,13 @@ pip install -r requirements.txt
 pip install dlib-bin
 pip install git+https://github.com/openai/CLIP.git
 
-# 3. One-command setup (downloads weights + 1000 face images + preprocesses)
+# 3. Download model weights
+python scripts/download_weights.py
+
+# 4. One-command setup (downloads 1000 face images + preprocesses)
 python setup.py
 
-# 4. Start the app
+# 5. Start the app
 uvicorn app.backend:app --host 0.0.0.0 --port 8000 --reload
 ```
 

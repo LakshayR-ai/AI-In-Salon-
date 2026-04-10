@@ -1,12 +1,14 @@
 """
-Advanced Hair Blend — no OpenCV dependency.
+Hair Blend — CPU fallback when HairFastGAN GPU is unavailable.
 
-Techniques:
-  1. Face alignment (dlib landmarks)
-  2. BiSeNet hair segmentation
-  3. LAB color histogram matching (scipy)
-  4. Multi-scale Gaussian pyramid blending (pure numpy)
-  5. Edge-aware feathering
+Uses:
+  - BiSeNet hair segmentation
+  - Color histogram matching
+  - Multi-scale pyramid blending
+  - Edge feathering
+
+Note: This is a mask-based approach. For production quality,
+use HairFastGAN with a GPU (automatic when CUDA is available).
 """
 import sys
 import argparse
@@ -22,58 +24,31 @@ from utils.face_alignment import FaceAligner
 from utils.hair_segmentation import HairSegmenter
 
 
-# ── Color matching ────────────────────────────────────────────────────────────
-
-def rgb_to_lab(img: np.ndarray) -> np.ndarray:
-    """Simple RGB → LAB approximation using numpy."""
-    img = img.astype(float) / 255.0
-    # sRGB to linear
-    mask = img > 0.04045
-    img[mask]  = ((img[mask]  + 0.055) / 1.055) ** 2.4
-    img[~mask] = img[~mask] / 12.92
-    # Linear to XYZ
-    M = np.array([[0.4124564, 0.3575761, 0.1804375],
-                  [0.2126729, 0.7151522, 0.0721750],
-                  [0.0193339, 0.1191920, 0.9503041]])
-    xyz = img @ M.T
-    # XYZ to LAB
-    xyz /= np.array([0.95047, 1.00000, 1.08883])
-    mask2 = xyz > 0.008856
-    xyz[mask2]  = xyz[mask2]  ** (1/3)
-    xyz[~mask2] = 7.787 * xyz[~mask2] + 16/116
-    L = 116 * xyz[..., 1] - 16
-    a = 500 * (xyz[..., 0] - xyz[..., 1])
-    b = 200 * (xyz[..., 1] - xyz[..., 2])
-    return np.stack([L, a, b], axis=-1)
-
-
 def match_color(src: np.ndarray, ref: np.ndarray,
                 mask: np.ndarray) -> np.ndarray:
-    """Match hair color statistics from reference to source."""
-    result = src.astype(float).copy()
+    """Match color statistics of ref hair to src hair region."""
+    result = ref.astype(float).copy()
     hair_px = mask > 0
+    if hair_px.sum() == 0:
+        return result.astype(np.uint8)
 
     for ch in range(3):
-        src_ch = src[:, :, ch].astype(float)[hair_px]
-        ref_ch = ref[:, :, ch].astype(float)[hair_px]
-        if src_ch.std() < 1e-6 or ref_ch.std() < 1e-6:
+        s = src[:, :, ch].astype(float)[hair_px]
+        r = ref[:, :, ch].astype(float)[hair_px]
+        if r.std() < 1e-6:
             continue
-        matched = (src_ch - src_ch.mean()) / src_ch.std() * ref_ch.std() + ref_ch.mean()
+        matched = (r - r.mean()) / r.std() * s.std() + s.mean()
         result[:, :, ch][hair_px] = np.clip(matched, 0, 255)
 
     return result.astype(np.uint8)
 
 
-# ── Pyramid blending ──────────────────────────────────────────────────────────
-
 def build_gaussian_pyramid(img: np.ndarray, levels: int) -> list:
     pyramid = [img.astype(float)]
     for _ in range(levels):
         prev = pyramid[-1]
-        if prev.ndim == 3:
-            blurred = gaussian_filter(prev, sigma=[1, 1, 0])
-        else:
-            blurred = gaussian_filter(prev, sigma=1)
+        sigma = [1, 1, 0] if prev.ndim == 3 else 1
+        blurred = gaussian_filter(prev, sigma=sigma)
         pyramid.append(blurred[::2, ::2])
     return pyramid
 
@@ -83,8 +58,7 @@ def build_laplacian_pyramid(img: np.ndarray, levels: int) -> list:
     lp = []
     for i in range(levels):
         h, w = gp[i].shape[:2]
-        up = np.repeat(np.repeat(gp[i+1], 2, axis=0), 2, axis=1)
-        up = up[:h, :w]
+        up = np.repeat(np.repeat(gp[i+1], 2, axis=0), 2, axis=1)[:h, :w]
         lp.append(gp[i] - up)
     lp.append(gp[levels])
     return lp
@@ -92,53 +66,41 @@ def build_laplacian_pyramid(img: np.ndarray, levels: int) -> list:
 
 def pyramid_blend(src: np.ndarray, ref: np.ndarray,
                   mask: np.ndarray, levels: int = 4) -> np.ndarray:
-    """Multi-scale pyramid blending for seamless transitions."""
     mask_f = mask.astype(float) / 255.0
-    if mask_f.ndim == 2:
-        mask_f = mask_f[:, :, None]
 
-    lp_src  = build_laplacian_pyramid(src,  levels)
-    lp_ref  = build_laplacian_pyramid(ref,  levels)
-    gp_mask = build_gaussian_pyramid(mask_f[:, :, 0], levels)
+    lp_src  = build_laplacian_pyramid(src, levels)
+    lp_ref  = build_laplacian_pyramid(ref, levels)
+    gp_mask = build_gaussian_pyramid(mask_f, levels)
 
     blended = []
     for ls, lr, gm in zip(lp_src, lp_ref, gp_mask):
-        gm3 = gm[:, :, None] if gm.ndim == 2 else gm
-        # Resize gm3 to match ls if needed
-        if gm3.shape[:2] != ls.shape[:2]:
-            from PIL import Image as PILImage
-            gm_pil = PILImage.fromarray((gm3[:,:,0]*255).astype(np.uint8))
-            gm_pil = gm_pil.resize((ls.shape[1], ls.shape[0]), PILImage.LANCZOS)
-            gm3 = np.array(gm_pil).astype(float)[:,:,None] / 255.0
-        blended.append(ls * (1 - gm3) + lr * gm3)
+        if gm.ndim == 2:
+            gm = gm[:, :, None]
+        if gm.shape[:2] != ls.shape[:2]:
+            gm_pil = Image.fromarray((gm[:,:,0]*255).astype(np.uint8))
+            gm_pil = gm_pil.resize((ls.shape[1], ls.shape[0]), Image.LANCZOS)
+            gm = np.array(gm_pil).astype(float)[:,:,None] / 255.0
+        blended.append(ls * (1 - gm) + lr * gm)
 
     result = blended[-1]
     for i in range(len(blended) - 2, -1, -1):
         h, w = blended[i].shape[:2]
-        up = np.repeat(np.repeat(result, 2, axis=0), 2, axis=1)
-        up = up[:h, :w]
+        up = np.repeat(np.repeat(result, 2, axis=0), 2, axis=1)[:h, :w]
         result = up + blended[i]
 
     return np.clip(result, 0, 255).astype(np.uint8)
 
 
-# ── Main blend function ───────────────────────────────────────────────────────
-
 def blend_hair(source: Image.Image, reference: Image.Image,
                seg_ckpt: str, size: int = 512,
                device: str = "cpu") -> Image.Image:
     """
-    Advanced hair transfer:
-    1. Face alignment
-    2. Hair segmentation
-    3. Color histogram matching
-    4. Multi-scale pyramid blending
-    5. Edge feathering
+    Transfer hairstyle using segmentation + color matching + pyramid blend.
     """
     aligner   = FaceAligner(output_size=size, device=device)
     segmenter = HairSegmenter(seg_ckpt, device=device)
 
-    # Align
+    # Align faces
     src_aligned = aligner.align(source) or source.resize((size, size), Image.LANCZOS)
     ref_aligned = aligner.align(reference) or reference.resize((size, size), Image.LANCZOS)
     src_aligned = src_aligned.resize((size, size), Image.LANCZOS)
@@ -147,70 +109,59 @@ def blend_hair(source: Image.Image, reference: Image.Image,
     src_arr = np.array(src_aligned)
     ref_arr = np.array(ref_aligned)
 
-    # Segment
-    src_mask = segmenter.segment(src_aligned)
+    # Segment hair
+    src_mask = segmenter.segment(src_aligned)   # [H,W] 0/255
     ref_mask = segmenter.segment(ref_aligned)
 
-    # Dilate ref mask
-    ref_mask_pil = Image.fromarray(ref_mask)
-    ref_mask_pil = ref_mask_pil.filter(ImageFilter.MaxFilter(size=15))
+    # Dilate ref mask to cover full hair area
+    ref_mask_pil     = Image.fromarray(ref_mask).filter(ImageFilter.MaxFilter(size=21))
     ref_mask_dilated = np.array(ref_mask_pil)
 
-    # Color match
-    ref_color = match_color(ref_arr, src_arr, src_mask)
+    # Dilate src mask to fully erase original hair
+    src_mask_pil     = Image.fromarray(src_mask).filter(ImageFilter.MaxFilter(size=21))
+    src_mask_dilated = np.array(src_mask_pil)
 
-    # Feather mask edges
-    ref_mask_soft = gaussian_filter(ref_mask_dilated.astype(float), sigma=10)
-    if ref_mask_soft.max() > 0:
-        ref_mask_soft = np.clip(ref_mask_soft / ref_mask_soft.max(), 0, 1)
+    # Color match: adapt ref hair color to match src hair tone
+    ref_color = match_color(src_arr, ref_arr, ref_mask)
 
-    # Only blend in the hair region — keep source face/background intact
-    # Use tighter mask to avoid background bleed
-    ref_mask_tight = gaussian_filter(ref_mask.astype(float), sigma=6)
-    if ref_mask_tight.max() > 0:
-        ref_mask_tight = np.clip(ref_mask_tight / ref_mask_tight.max(), 0, 1)
+    # Build blend mask — feathered edges
+    blend_mask = gaussian_filter(ref_mask_dilated.astype(float), sigma=12)
+    if blend_mask.max() > 0:
+        blend_mask = blend_mask / blend_mask.max()
+    blend_mask = np.clip(blend_mask, 0, 1)
 
-    # Color-matched reference hair only (not full image)
-    ref_hair_only = src_arr.copy().astype(float)
-    hair_px = ref_mask_dilated > 0
-    ref_hair_only[hair_px] = ref_color.astype(float)[hair_px]
-
-    # Erase source hair — only fill exact hair pixels, not surrounding face
+    # Erase source hair: fill with surrounding skin tone
     src_no_hair = src_arr.copy().astype(float)
-    src_hair_px = src_mask > 128
-    if src_hair_px.sum() > 0:
-        # Sample skin from forehead area (narrow band just below hairline)
-        h, w = src_arr.shape[:2]
-        # Use a small region just outside the hair mask as skin reference
-        skin_mask = gaussian_filter(src_hair_px.astype(float), sigma=20)
-        skin_mask_border = np.clip(skin_mask - src_hair_px.astype(float), 0, 1)
-        if skin_mask_border.sum() > 0:
-            skin_color = (src_arr.astype(float) * skin_mask_border[:,:,None]).sum(axis=(0,1)) \
-                         / (skin_mask_border.sum() + 1e-8)
-        else:
-            skin_color = src_arr[h//2:2*h//3, w//3:2*w//3].mean(axis=(0,1))
+    erase_mask  = gaussian_filter(src_mask_dilated.astype(float), sigma=4)
+    if erase_mask.max() > 0:
+        erase_mask = erase_mask / erase_mask.max()
 
-        # Only fill exact hair pixels with soft transition
-        src_hair_soft = gaussian_filter(src_hair_px.astype(float), sigma=3)
-        src_no_hair = src_arr.astype(float) * (1 - src_hair_soft[:,:,None]) + \
-                      skin_color * src_hair_soft[:,:,None]
+    # Sample skin color from face center (nose/cheek area)
+    h, w = src_arr.shape[:2]
+    face_center = src_arr[h//3:2*h//3, w//4:3*w//4]
+    # Exclude hair pixels from skin sample
+    face_mask_region = src_mask[h//3:2*h//3, w//4:3*w//4]
+    skin_pixels = face_center[face_mask_region == 0]
+    skin_color  = skin_pixels.mean(axis=0) if len(skin_pixels) > 100 \
+                  else face_center.mean(axis=(0, 1))
 
-    # Pyramid blend reference hair onto hair-erased source
+    src_no_hair = src_arr.astype(float) * (1 - erase_mask[:,:,None]) + \
+                  skin_color * erase_mask[:,:,None]
+
+    # Pyramid blend reference hair onto erased source
     result = pyramid_blend(
-        src_no_hair.astype(np.uint8), ref_hair_only.astype(np.uint8),
-        (ref_mask_soft * 255).astype(np.uint8)
+        src_no_hair.astype(np.uint8),
+        ref_color,
+        (blend_mask * 255).astype(np.uint8)
     )
 
-    # Final composite — full opacity in hair region, feathered edges only
-    ref_mask_hard = (ref_mask_dilated > 128).astype(float)
-    ref_mask_edge = gaussian_filter(ref_mask_hard, sigma=8)
-
-    alpha = ref_mask_edge[:, :, None]
-    # Use src_no_hair as base so original hair doesn't show through
+    # Final composite with feathered edges
+    alpha = blend_mask[:, :, None]
     final = result.astype(float) * alpha + src_no_hair * (1 - alpha)
     final = np.clip(final, 0, 255).astype(np.uint8)
 
     return Image.fromarray(final)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -222,8 +173,8 @@ def main():
     parser.add_argument("--device",    default="cpu")
     args = parser.parse_args()
 
-    src = Image.open(args.source).convert("RGB")
-    ref = Image.open(args.reference).convert("RGB")
+    src    = Image.open(args.source).convert("RGB")
+    ref    = Image.open(args.reference).convert("RGB")
     result = blend_hair(src, ref, args.seg_ckpt, args.size, args.device)
     result.save(args.output)
     print(f"Saved → {args.output}")

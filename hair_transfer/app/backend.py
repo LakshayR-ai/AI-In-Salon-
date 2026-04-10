@@ -2,15 +2,15 @@
 AI Salon — FastAPI backend
 
 Pipeline priority:
-  1. Official HairFastGAN (best quality — download with --download flag)
-  2. Custom trained pipeline (our trained checkpoints)
-  3. Quick mask blend (fallback — always works, no training needed)
+  1. Official HairFastGAN (GPU only — production quality)
+  2. Quick mask blend (CPU fallback)
 """
 import io
 import os
 import sys
 import base64
 import logging
+import tempfile
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -23,105 +23,77 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT.parent))  # workspace root
-
-# Change working directory to hair_transfer so relative imports work
-os.chdir(ROOT)
-
-from inference.quick_test import blend_hair
-
-
-def _try_huggingface_spaces(face_pil: Image.Image,
-                             ref_pil: Image.Image) -> Image.Image | None:
-    """
-    Call the official HairFastGAN HuggingFace Spaces demo as an API.
-    Returns result PIL image or None if unavailable.
-    Requires: pip install gradio-client
-    """
-    try:
-        import tempfile
-        from gradio_client import Client, handle_file
-
-        client = Client("AIRI-Institute/HairFastGAN")
-
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f1, \
-             tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f2:
-            face_pil.save(f1.name)
-            ref_pil.save(f2.name)
-
-            result = client.predict(
-                handle_file(f1.name),   # face
-                handle_file(f2.name),   # shape
-                handle_file(f2.name),   # color (same as shape)
-                api_name="/swap"
-            )
-
-        import os
-        os.unlink(f1.name)
-        os.unlink(f2.name)
-
-        if isinstance(result, str):
-            return Image.open(result).convert("RGB")
-        return None
-
-    except Exception as e:
-        log.debug(f"HuggingFace Spaces unavailable: {e}")
-        return None
 
 log = logging.getLogger("salon")
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
 
-official_model  = None
-custom_pipeline = None
+hairfast_model  = None
 pipeline_mode   = "quick_blend"
 
 
 def _load_cfg():
-    with open(ROOT / "configs" / "base.yaml") as f:
-        return yaml.safe_load(f)
+    cfg_path = ROOT / "configs" / "base.yaml"
+    if cfg_path.exists():
+        with open(cfg_path) as f:
+            return yaml.safe_load(f)
+    return {"device": "cpu", "stylegan": {"size": 256}}
+
+
+def _try_load_hairfastgan():
+    """Try to load official HairFastGAN model."""
+    import torch
+    if not torch.cuda.is_available():
+        log.info("No GPU — skipping HairFastGAN")
+        return None
+
+    # Find HairFastGAN repo
+    candidates = [
+        Path("/content/HairFastGAN-main"),
+        ROOT.parents[1] / "HairFastGAN-main",
+        ROOT.parents[0] / "HairFastGAN-main",
+    ]
+    repo = next((p for p in candidates if p.exists()), None)
+    if not repo:
+        log.info("HairFastGAN repo not found")
+        return None
+
+    try:
+        if str(repo) not in sys.path:
+            sys.path.insert(0, str(repo))
+
+        original_cwd = os.getcwd()
+        os.chdir(repo)
+
+        from hair_swap import HairFast, get_parser
+        args = get_parser().parse_args([])
+        args.device = "cuda"
+        model = HairFast(args)
+
+        os.chdir(original_cwd)
+        log.info("HairFastGAN loaded — production quality")
+        return model
+    except Exception as e:
+        log.warning(f"HairFastGAN failed: {e}")
+        try:
+            os.chdir(original_cwd)
+        except Exception:
+            pass
+        return None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global official_model, custom_pipeline, pipeline_mode
-    cfg    = _load_cfg()
-    device = cfg.get("device", "cpu")
-    pretrained = ROOT / "pretrained"
+    global hairfast_model, pipeline_mode
 
-    # ── Tier 1: Official HairFastGAN (GPU only) ──────────────────────────────
-    import torch
-    if torch.cuda.is_available():
-        try:
-            from app.hairfastgan_pipeline import models_available, load_hairfastgan
-            if models_available(pretrained):
-                log.info("Loading official HairFastGAN models (production quality)...")
-                official_model = load_hairfastgan(pretrained, device)
-                if official_model:
-                    pipeline_mode = "official_hairfastgan"
-                    log.info("Official HairFastGAN ready.")
-        except Exception as e:
-            log.info(f"Official pipeline not available: {e}")
+    hairfast_model = _try_load_hairfastgan()
+    if hairfast_model:
+        pipeline_mode = "hairfastgan"
     else:
-        log.info("No GPU detected — skipping official HairFastGAN (requires CUDA)")
-
-    # ── Tier 2: Custom trained pipeline ──────────────────────────────────────
-    if not official_model:
-        try:
-            sys.path.insert(0, str(ROOT))
-            from inference.transfer_hairstyle import HairTransferPipeline
-            custom_pipeline = HairTransferPipeline(cfg, device=device)
-            pipeline_mode   = "custom_trained"
-            log.info("Custom trained pipeline loaded.")
-        except Exception as e:
-            log.info(f"Custom pipeline not available: {e}")
-
-    # ── Tier 3: Quick blend fallback ─────────────────────────────────────────
-    if not official_model and not custom_pipeline:
         pipeline_mode = "quick_blend"
-        log.info("Using quick mask blend (no training required).")
+        log.info("Using quick blend fallback")
 
-    log.info(f"Active pipeline: {pipeline_mode}")
+    log.info(f"Pipeline: {pipeline_mode}")
     yield
 
 
@@ -141,6 +113,37 @@ def pil_to_b64(img: Image.Image) -> str:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode()
+
+
+def run_hairfastgan(face_pil: Image.Image,
+                    ref_pil: Image.Image) -> Image.Image:
+    """Run official HairFastGAN inference."""
+    import torch
+    import torchvision.transforms.functional as TF
+
+    # Find HairFastGAN repo for chdir
+    candidates = [
+        Path("/content/HairFastGAN-main"),
+        ROOT.parents[1] / "HairFastGAN-main",
+    ]
+    repo = next((p for p in candidates if p.exists()), None)
+
+    original_cwd = os.getcwd()
+    if repo:
+        os.chdir(repo)
+
+    try:
+        face_t = TF.to_tensor(face_pil)
+        ref_t  = TF.to_tensor(ref_pil)
+
+        result = hairfast_model.swap(face_t, ref_t, ref_t, align=True)
+
+        if isinstance(result, tuple):
+            result = result[0]
+
+        return TF.to_pil_image(result.clamp(0, 1).cpu())
+    finally:
+        os.chdir(original_cwd)
 
 
 @app.get("/health")
@@ -163,14 +166,10 @@ async def swap(
     cfg      = _load_cfg()
 
     try:
-        if official_model:
-            from app.hairfastgan_pipeline import run_hairfastgan
-            result = run_hairfastgan(official_model, face_pil, ref_pil)
-
-        elif _try_huggingface_spaces(face_pil, ref_pil) is not None:
-            result = _try_huggingface_spaces(face_pil, ref_pil)
-
+        if hairfast_model:
+            result = run_hairfastgan(face_pil, ref_pil)
         else:
+            from inference.quick_test import blend_hair
             seg_ckpt = str(ROOT / "pretrained" / "face_parsing.pth")
             result   = blend_hair(face_pil, ref_pil, seg_ckpt,
                                   size=512,
@@ -179,8 +178,10 @@ async def swap(
         log.exception("Swap failed")
         raise HTTPException(500, str(e))
 
-    return JSONResponse({"result": pil_to_b64(result),
-                         "pipeline": pipeline_mode})
+    return JSONResponse({
+        "result":   pil_to_b64(result),
+        "pipeline": pipeline_mode,
+    })
 
 
 # ── Serve frontend ────────────────────────────────────────────────────────────

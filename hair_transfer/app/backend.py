@@ -28,10 +28,16 @@ model   = None
 def _find_hairfastgan():
     candidates = [
         Path("/content/HairFastGAN-main"),
-        ROOT.parents[1] / "HairFastGAN-main",
-        ROOT.parents[0] / "HairFastGAN-main",
+        ROOT.parent.parent / "HairFastGAN-main",
+        ROOT.parent / "HairFastGAN-main",
+        Path.cwd().parent / "HairFastGAN-main",
     ]
-    return next((p for p in candidates if (p / "hair_swap.py").exists()), None)
+    for p in candidates:
+        if p.exists() and (p / "hair_swap.py").exists():
+            log.info(f"Found HairFastGAN at: {p}")
+            return p
+    log.warning(f"HairFastGAN not found. Checked: {[str(p) for p in candidates]}")
+    return None
 
 
 @asynccontextmanager
@@ -45,18 +51,25 @@ async def lifespan(app: FastAPI):
             import torch
             original_cwd = os.getcwd()
             os.chdir(repo)
+            log.info(f"Changed to directory: {repo}")
+            log.info(f"Importing HairFastGAN from: {repo / 'hair_swap.py'}")
+            
             from hair_swap import HairFast, get_parser
             args = get_parser().parse_args([])
             args.device = "cuda" if torch.cuda.is_available() else "cpu"
+            
+            log.info(f"Loading HairFastGAN model on {args.device}...")
             model = HairFast(args)
             os.chdir(original_cwd)
-            log.info(f"HairFastGAN loaded on {args.device}")
+            log.info(f"✅ HairFastGAN loaded successfully on {args.device}")
         except Exception as e:
-            log.error(f"HairFastGAN failed to load: {e}")
+            log.error(f"❌ HairFastGAN failed to load: {e}")
+            import traceback
+            log.error(traceback.format_exc())
             try: os.chdir(original_cwd)
             except: pass
     else:
-        log.warning("HairFastGAN repo not found")
+        log.warning("❌ HairFastGAN repo not found in any candidate location")
     yield
 
 

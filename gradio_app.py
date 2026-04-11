@@ -370,16 +370,23 @@ def create_ui():
                 import requests
                 from io import BytesIO
                 
-                # Get the image URL from the gallery
-                image_url = evt.value
+                # evt.value is a dict with 'image' key containing 'url'
+                if isinstance(evt.value, dict):
+                    image_url = evt.value.get('image', {}).get('url') or evt.value.get('image', {}).get('path')
+                else:
+                    image_url = evt.value
+                
+                print(f"Loading image from: {image_url}")
                 
                 # Download and load the image
                 response = requests.get(image_url)
+                response.raise_for_status()
                 img = Image.open(BytesIO(response.content))
                 
                 return img
             except Exception as e:
                 print(f"Error loading image: {e}")
+                # Return a placeholder or None
                 return None
         
         # Connect gallery selections

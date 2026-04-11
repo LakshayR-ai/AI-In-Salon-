@@ -15,6 +15,32 @@ print("AI-IN-SALON HAIR TRANSFER - COMPLETE SETUP")
 print("="*60 + "\n")
 
 # ============================================================================
+# STEP 0: Fix NumPy Version
+# ============================================================================
+print("🔧 STEP 0: Checking NumPy version...\n")
+
+import numpy as np
+current_numpy = np.__version__
+
+if current_numpy.startswith('2.'):
+    print(f"⚠️  NumPy {current_numpy} detected (incompatible)")
+    print("Downgrading to NumPy 1.x...\n")
+    
+    os.system('pip uninstall numpy -y -q')
+    os.system('pip install "numpy<2.0" -q')
+    
+    print("\n⚠️  NUMPY DOWNGRADED!")
+    print("="*60)
+    print("PLEASE RESTART RUNTIME NOW:")
+    print("Runtime → Restart runtime")
+    print("="*60)
+    print("\nAfter restart, run this script again:")
+    print("%run /content/salon/colab_complete_setup.py")
+    raise SystemExit("Restart runtime required after NumPy downgrade")
+else:
+    print(f"✅ NumPy {current_numpy} - compatible\n")
+
+# ============================================================================
 # STEP 1: Clone Repositories
 # ============================================================================
 print("📥 STEP 1: Cloning repositories...\n")

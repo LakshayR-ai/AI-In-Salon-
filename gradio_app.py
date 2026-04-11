@@ -365,9 +365,22 @@ def create_ui():
         
         # Connect buttons for Gallery tab
         def select_from_gallery(evt: gr.SelectData):
-            """Handle gallery selection"""
-            # evt.value contains the selected image URL
-            return evt.value
+            """Handle gallery selection - load image from URL"""
+            try:
+                import requests
+                from io import BytesIO
+                
+                # Get the image URL from the gallery
+                image_url = evt.value
+                
+                # Download and load the image
+                response = requests.get(image_url)
+                img = Image.open(BytesIO(response.content))
+                
+                return img
+            except Exception as e:
+                print(f"Error loading image: {e}")
+                return None
         
         # Connect gallery selections
         for gallery in [gallery_women_long, gallery_women_short, gallery_women_colored,

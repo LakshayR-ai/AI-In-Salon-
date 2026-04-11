@@ -26,6 +26,15 @@ model   = None
 
 
 def _find_hairfastgan():
+    # Check environment variable first
+    env_path = os.getenv('HAIRFASTGAN_PATH')
+    if env_path:
+        p = Path(env_path)
+        if p.exists() and (p / "hair_swap.py").exists():
+            log.info(f"Found HairFastGAN at: {p} (from HAIRFASTGAN_PATH env var)")
+            return p
+    
+    # Fallback to candidate locations
     candidates = [
         Path("/content/HairFastGAN-main"),
         ROOT.parent.parent / "HairFastGAN-main",
